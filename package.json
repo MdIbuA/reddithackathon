@@ -11,7 +11,7 @@
     "launch": "npm run deploy && devvit publish",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
     "test": "vitest run",
-    "setup": "vite build && devvit init"
+    "setup": "vite build && devvit upload"
   },
   "dependencies": {
     "@devvit/web": "^0.15.4",
