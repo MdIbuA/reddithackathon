@@ -40,6 +40,7 @@ export type UserStats = {
 export type StateResponse = {
   day: number;
   isToday: boolean;
+  subreddit: string;
   username: string | null;
   snoovatar: string | null;
   prompts: Prompt[];

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { showToast } from '@devvit/web/client';
 import type {
   AnswerResponse,
@@ -10,8 +10,9 @@ import type {
   StateResponse,
   SuggestionsResponse,
 } from '../shared/api';
-import { GRADE_EMOJI, MAX_POINTS_PER_DAY, PROMPTS_PER_DAY, gradeFor, type Grade } from '../shared/scoring';
+import { MAX_POINTS_PER_DAY, PROMPTS_PER_DAY, gradeFor, type Grade } from '../shared/scoring';
 import { ApiError, api } from './api';
+import { Confetti, Meter, buzz, splitLabel, useCountUp } from './ui';
 
 type View =
   | { kind: 'intro' }
@@ -22,15 +23,24 @@ type View =
 
 type Sheet = null | 'leaderboard' | 'suggest' | 'howto';
 
+const GRADE_LABEL: Record<Grade, string> = {
+  bullseye: 'Bullseye',
+  close: 'Close read',
+  off: 'Off the mark',
+  miss: 'Way off',
+};
+
 const QUIPS: Record<Grade, string[]> = {
-  bullseye: ['Bullseye. You ARE the room.', 'Scary accurate. Are you a mod?', 'Telepathy confirmed.'],
-  close: ['Close! You get this crowd.', 'Solid read.', 'Nearly nailed it.'],
-  off: ['Hmm, the room had other ideas.', 'Not quite the vibe.', 'Half right, half chaos.'],
-  miss: ['Wildly off. Are you even subscribed?', 'The room said: who are you?', 'Bold read. Wrong, but bold.'],
+  bullseye: ['You ARE the room.', 'Scary accurate. Are you a mod?', 'Telepathy confirmed.'],
+  close: ['You get this crowd.', 'Solid read.', 'So close you could smell it.'],
+  off: ['The room had other ideas.', 'Not quite the vibe.', 'Half right, half chaos.'],
+  miss: ['Are you even subscribed?', 'The room said: who are you?', 'Bold read. Wrong, but bold.'],
 };
 
 const firstUnanswered = (answers: (Reveal | null)[]) => answers.findIndex((a) => a === null);
 const pickRandom = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)]!;
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong');
+const isLoginErr = (e: unknown) => e instanceof ApiError && e.code === 'LOGIN_REQUIRED';
 
 export function App() {
   const [state, setState] = useState<StateResponse | null>(null);
@@ -48,7 +58,7 @@ export function App() {
       else if (next > 0) setView({ kind: 'pick', index: next }); // resume mid-round
       else setView({ kind: 'intro' });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load the round.');
+      setError(errMsg(e));
     }
   }, []);
 
@@ -58,24 +68,17 @@ export function App() {
 
   if (error) {
     return (
-      <Shell>
-        <div className="center stack">
-          <div className="big-emoji">😵</div>
-          <p>{error}</p>
-          <button className="btn primary" onClick={() => void load()}>Try again</button>
+      <div className="app">
+        <div className="screen center">
+          <div className="state-emoji">😵‍💫</div>
+          <h2 className="h2">The room went quiet</h2>
+          <p className="muted">{error}</p>
+          <button className="btn btn-primary" onClick={() => void load()}>Try again</button>
         </div>
-      </Shell>
+      </div>
     );
   }
-  if (!state) {
-    return (
-      <Shell>
-        <div className="center">
-          <div className="spinner" aria-label="Loading" />
-        </div>
-      </Shell>
-    );
-  }
+  if (!state) return <LoadingSkeleton />;
 
   const onAnswered = (res: AnswerResponse, index: number) => {
     setState((s) => {
@@ -87,80 +90,65 @@ export function App() {
     setView({ kind: 'reveal', index, reveal: res.reveal, completed: Boolean(res.summary) });
   };
 
-  return (
-    <Shell
-      header={
-        <Header
-          day={state.day}
-          streak={state.stats.streak}
-          answers={state.answers}
-          current={'index' in view ? view.index : -1}
-          onLeaderboard={() => setSheet('leaderboard')}
-          onHelp={() => setSheet('howto')}
-        />
-      }
-    >
-      {view.kind === 'intro' && (
-        <Intro state={state} onStart={() => setView({ kind: 'pick', index: 0 })} onHowTo={() => setSheet('howto')} />
-      )}
-      {view.kind === 'pick' && (
-        <PickStep
-          key={`pick-${view.index}`}
-          prompt={state.prompts[view.index]!}
-          index={view.index}
-          onPick={(pick) => setView({ kind: 'predict', index: view.index, pick })}
-        />
-      )}
-      {view.kind === 'predict' && (
-        <PredictStep
-          key={`predict-${view.index}`}
-          prompt={state.prompts[view.index]!}
-          index={view.index}
-          pick={view.pick}
-          onBack={() => setView({ kind: 'pick', index: view.index })}
-          onAnswered={(res) => onAnswered(res, view.index)}
-        />
-      )}
-      {view.kind === 'reveal' && (
-        <RevealStep
-          key={`reveal-${view.index}`}
-          prompt={state.prompts[view.index]!}
-          reveal={view.reveal}
-          isLast={view.index === PROMPTS_PER_DAY - 1}
-          onNext={() =>
-            view.completed || view.index === PROMPTS_PER_DAY - 1
-              ? setView({ kind: 'summary' })
-              : setView({ kind: 'pick', index: view.index + 1 })
-          }
-        />
-      )}
-      {view.kind === 'summary' && state.summary && (
-        <SummaryView
-          state={state}
-          onLeaderboard={() => setSheet('leaderboard')}
-          onSuggest={() => setSheet('suggest')}
-        />
-      )}
+  const currentIndex = 'index' in view ? view.index : -1;
+  const goNext = (index: number, completed: boolean) =>
+    completed || index === PROMPTS_PER_DAY - 1 ? setView({ kind: 'summary' }) : setView({ kind: 'pick', index: index + 1 });
 
-      {sheet === 'leaderboard' && <LeaderboardSheet onClose={() => setSheet(null)} />}
-      {sheet === 'suggest' && <SuggestSheet onClose={() => setSheet(null)} />}
-      {sheet === 'howto' && <HowToSheet onClose={() => setSheet(null)} />}
-    </Shell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------------
-function Shell({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="app">
-      {header}
-      <main className="main">{children}</main>
+      <Header
+        day={state.day}
+        streak={state.stats.streak}
+        answers={state.answers}
+        current={currentIndex}
+        onLeaderboard={() => setSheet('leaderboard')}
+        onHelp={() => setSheet('howto')}
+      />
+
+      <main className="main" key={`${view.kind}-${currentIndex}`}>
+        {view.kind === 'intro' && (
+          <Intro state={state} onStart={() => setView({ kind: 'pick', index: 0 })} onHowTo={() => setSheet('howto')} />
+        )}
+        {view.kind === 'pick' && (
+          <PickStep
+            prompt={state.prompts[view.index]!}
+            index={view.index}
+            onPick={(pick) => setView({ kind: 'predict', index: view.index, pick })}
+          />
+        )}
+        {view.kind === 'predict' && (
+          <PredictStep
+            prompt={state.prompts[view.index]!}
+            index={view.index}
+            pick={view.pick}
+            subreddit={state.subreddit}
+            onBack={() => setView({ kind: 'pick', index: view.index })}
+            onAnswered={(res) => onAnswered(res, view.index)}
+          />
+        )}
+        {view.kind === 'reveal' && (
+          <RevealStep
+            prompt={state.prompts[view.index]!}
+            index={view.index}
+            reveal={view.reveal}
+            onNext={() => goNext(view.index, view.completed)}
+          />
+        )}
+        {view.kind === 'summary' && state.summary && (
+          <SummaryView state={state} onLeaderboard={() => setSheet('leaderboard')} onSuggest={() => setSheet('suggest')} />
+        )}
+      </main>
+
+      {sheet === 'leaderboard' && <LeaderboardSheet me={state.username} onClose={() => setSheet(null)} />}
+      {sheet === 'suggest' && <SuggestSheet onClose={() => setSheet(null)} />}
+      {sheet === 'howto' && <HowToSheet onClose={() => setSheet(null)} />}
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Chrome
+// ---------------------------------------------------------------------------
 function Header(props: {
   day: number;
   streak: number;
@@ -171,26 +159,64 @@ function Header(props: {
 }) {
   return (
     <header className="header">
-      <div className="brand">
-        <span className="logo" aria-hidden>👀</span>
-        <span className="brand-text">
-          <span className="brand-name">Read the Room </span><span className="muted">#{props.day}</span>
-        </span>
+      <div className="header-row">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden>👀</span>
+          <span className="brand-name">Read the Room</span>
+          <span className="room-no">#{props.day}</span>
+        </div>
+        <div className="header-actions">
+          {props.streak > 0 && (
+            <span className="streak" title={`${props.streak}-day streak`}>
+              🔥<b>{props.streak}</b>
+            </span>
+          )}
+          <button className="icon-btn" onClick={props.onLeaderboard} aria-label="Leaderboard">🏆</button>
+          <button className="icon-btn" onClick={props.onHelp} aria-label="How to play">?</button>
+        </div>
       </div>
-      <div className="dots" aria-label="Progress">
+      <div className="progress" aria-label="Round progress">
         {props.answers.map((a, i) => (
           <span
             key={i}
-            className={`dot ${a ? `done ${gradeFor(a.points)}` : ''} ${i === props.current ? 'current' : ''}`}
+            className={`seg ${a ? `done g-${gradeFor(a.points)}` : ''} ${i === props.current ? 'current' : ''}`}
           />
         ))}
       </div>
-      <div className="header-actions">
-        {props.streak > 0 && <span className="chip" title="Daily streak">🔥 {props.streak}</span>}
-        <button className="icon-btn" onClick={props.onLeaderboard} aria-label="Leaderboard">🏆</button>
-        <button className="icon-btn" onClick={props.onHelp} aria-label="How to play">?</button>
-      </div>
     </header>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <div className="app">
+      <div className="header">
+        <div className="header-row">
+          <div className="sk sk-line" style={{ width: 150 }} />
+          <div className="sk sk-circle" />
+        </div>
+        <div className="progress">{Array.from({ length: PROMPTS_PER_DAY }, (_, i) => <span key={i} className="seg" />)}</div>
+      </div>
+      <div className="main">
+        <div className="sk sk-card" />
+        <div className="options">
+          <div className="sk sk-tile" />
+          <div className="sk sk-tile" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptCard({ prompt, index, compact }: { prompt: Prompt; index: number; compact?: boolean }) {
+  return (
+    <section className={`prompt-card ${compact ? 'compact' : ''}`}>
+      <div className="eyebrow">
+        <span>Debate {index + 1} <span className="dim">/ {PROMPTS_PER_DAY}</span></span>
+        {prompt.author && <span className="credit">✨ by u/{prompt.author}</span>}
+      </div>
+      <h2 className="prompt-q">{prompt.q}</h2>
+    </section>
   );
 }
 
@@ -198,47 +224,77 @@ function Header(props: {
 // Screens
 // ---------------------------------------------------------------------------
 function Intro({ state, onStart, onHowTo }: { state: StateResponse; onStart: () => void; onHowTo: () => void }) {
-  return (
-    <div className="stack center intro fade-in">
-      {state.snoovatar && <img className="snoo" src={state.snoovatar} alt="" />}
-      <h1 className="title">Don’t say what’s right.<br />Guess what the room thinks.</h1>
-      <p className="muted">
-        {PROMPTS_PER_DAY} quick debates. Pick your side, then predict how the subreddit split.
-        Closer guess, more points.
-      </p>
-      <div className="row chips">
-        <span className="chip">👥 {state.playersToday} played</span>
-        {state.stats.streak > 0 && <span className="chip">🔥 {state.stats.streak}-day streak</span>}
-        {!state.isToday && <span className="chip warn">📼 Past round · no streak</span>}
-      </div>
-      <button className="btn primary big" onClick={onStart}>
-        {state.username ? 'Enter the room' : 'Log in & play'}
-      </button>
-      <button className="link" onClick={onHowTo}>How scoring works</button>
-    </div>
-  );
-}
+  const [demo, setDemo] = useState(50);
+  useEffect(() => {
+    const seq = [64, 38, 71, 55, 47, 62];
+    let i = 0;
+    const t = setInterval(() => setDemo(seq[i++ % seq.length]!), 1100);
+    return () => clearInterval(t);
+  }, []);
 
-function PromptCard({ prompt, index }: { prompt: Prompt; index: number }) {
   return (
-    <div className="prompt-card">
-      <div className="prompt-meta">
-        <span>{index >= 0 ? `Prompt ${index + 1}/${PROMPTS_PER_DAY}` : 'The room has spoken'}</span>
-        {prompt.author && <span className="community">✨ from u/{prompt.author}</span>}
+    <div className="screen intro">
+      <div className="hero">
+        <p className="kicker">Daily · Room #{state.day}</p>
+        <h1 className="display">
+          Can you read <span className="hl">r/{state.subreddit}</span>?
+        </h1>
+        <p className="lede">Pick a side on {PROMPTS_PER_DAY} debates, then guess how the room split. Closest read wins.</p>
       </div>
-      <h2 className="prompt-q">{prompt.q}</h2>
+
+      <div className="demo" aria-hidden>
+        <div className="demo-track">
+          <div className="demo-a" style={{ width: `${demo}%` }} />
+          <div className="demo-thumb" style={{ left: `${demo}%` }} />
+        </div>
+        <div className="demo-labels">
+          <span>Team A</span>
+          <span>Team B</span>
+        </div>
+      </div>
+
+      <div className="intro-meta">
+        <span className="live"><i className="pulse" />{state.playersToday.toLocaleString()} in the room</span>
+        {state.stats.streak > 0 && <span className="pill">🔥 {state.stats.streak}-day streak</span>}
+        {!state.isToday && <span className="pill warn">📼 Past room · no streak</span>}
+      </div>
+
+      <div className="intro-cta">
+        <button className="btn btn-primary btn-xl" onClick={() => { buzz(); onStart(); }}>
+          {state.username ? 'Enter the room' : 'Log in & play'} <span aria-hidden>→</span>
+        </button>
+        <button className="btn-link" onClick={onHowTo}>How scoring works</button>
+      </div>
     </div>
   );
 }
 
 function PickStep({ prompt, index, onPick }: { prompt: Prompt; index: number; onPick: (p: Pick) => void }) {
+  const [chosen, setChosen] = useState<Pick | null>(null);
+  const choose = (p: Pick) => {
+    if (chosen) return;
+    buzz();
+    setChosen(p);
+    setTimeout(() => onPick(p), 260);
+  };
   return (
-    <div className="stack fade-in">
+    <div className="screen">
       <PromptCard prompt={prompt} index={index} />
-      <p className="step-label">Step 1 · Your honest take</p>
-      <div className="options">
-        <button className="option a" onClick={() => onPick('a')}>{prompt.a}</button>
-        <button className="option b" onClick={() => onPick('b')}>{prompt.b}</button>
+      <p className="step"><span className="step-no">1</span> Your honest take</p>
+      <div className={`options ${chosen ? 'has-choice' : ''}`}>
+        {(['a', 'b'] as const).map((side) => {
+          const { emoji, text } = splitLabel(side === 'a' ? prompt.a : prompt.b);
+          return (
+            <button
+              key={side}
+              className={`option opt-${side} ${chosen === side ? 'chosen' : ''}`}
+              onClick={() => choose(side)}
+            >
+              {emoji && <span className="opt-emoji">{emoji}</span>}
+              <span className="opt-text">{text}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -248,136 +304,179 @@ function PredictStep(props: {
   prompt: Prompt;
   index: number;
   pick: Pick;
+  subreddit: string;
   onBack: () => void;
   onAnswered: (r: AnswerResponse) => void;
 }) {
   const { prompt, index, pick } = props;
   const [guess, setGuess] = useState(50);
   const [busy, setBusy] = useState(false);
+  const picked = splitLabel(pick === 'a' ? prompt.a : prompt.b);
 
   const submit = async () => {
+    buzz(18);
     setBusy(true);
     try {
       props.onAnswered(await api.post<AnswerResponse>('/api/answer', { index, pick, guess }));
     } catch (e) {
-      if (!(e instanceof ApiError && e.code === 'LOGIN_REQUIRED')) showToast(e instanceof Error ? e.message : 'Failed');
+      if (!isLoginErr(e)) showToast(errMsg(e));
       setBusy(false);
     }
   };
 
   return (
-    <div className="stack fade-in">
-      <PromptCard prompt={prompt} index={index} />
-      <p className="step-label">
-        Step 2 · You picked <strong className={pick}>{pick === 'a' ? prompt.a : prompt.b}</strong>.
-        How did the <em>room</em> split?
-      </p>
-      <SplitBar a={prompt.a} b={prompt.b} pctA={guess} />
-      <input
-        className="slider"
-        type="range"
-        min={0}
-        max={100}
-        value={guess}
-        onChange={(e) => setGuess(Number(e.target.value))}
-        aria-label={`Percent of the room choosing ${prompt.a}`}
-      />
-      <div className="row">
-        <button className="btn ghost" onClick={props.onBack} disabled={busy}>← Change pick</button>
-        <button className="btn primary grow" onClick={() => void submit()} disabled={busy}>
-          {busy ? 'Reading the room…' : 'Lock it in'}
+    <div className="screen">
+      <PromptCard prompt={prompt} index={index} compact />
+      <div className="step-row">
+        <p className="step"><span className="step-no">2</span> How did r/{props.subreddit} split?</p>
+        <button className={`chip chip-${pick}`} onClick={props.onBack} disabled={busy} title="Change your pick">
+          You: {picked.emoji} {picked.text} <span className="chip-x">✎</span>
         </button>
       </div>
+      <Meter a={prompt.a} b={prompt.b} pct={guess} onChange={setGuess} />
+      <p className="hint">Drag the divider to where you think the room landed</p>
+      <button className="btn btn-primary btn-xl" onClick={() => void submit()} disabled={busy}>
+        {busy ? <span className="dots-loading">Reading the room</span> : <>Lock it in · {guess}%</>}
+      </button>
     </div>
   );
 }
 
-function SplitBar({ a, b, pctA, marker }: { a: string; b: string; pctA: number; marker?: number }) {
-  return (
-    <div className="split">
-      <div className="split-labels">
-        <span className="a">{a} <strong>{Math.round(pctA)}%</strong></span>
-        <span className="b"><strong>{100 - Math.round(pctA)}%</strong> {b}</span>
-      </div>
-      <div className="split-bar">
-        <div className="split-a" style={{ width: `${pctA}%` }} />
-        {marker !== undefined && (
-          <div className="marker" style={{ left: `${marker}%` }}>
-            <span>you</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RevealStep({ prompt, reveal, isLast, onNext }: { prompt: Prompt; reveal: Reveal; isLast: boolean; onNext: () => void }) {
-  const [shownPct, setShownPct] = useState(reveal.guess);
-  const points = useCountUp(reveal.points, 700);
+function RevealStep({ prompt, index, reveal, onNext }: { prompt: Prompt; index: number; reveal: Reveal; onNext: () => void }) {
+  const [phase, setPhase] = useState<'tally' | 'fill' | 'settled'>('tally');
   const grade = gradeFor(reveal.points);
   const quip = useMemo(() => pickRandom(QUIPS[grade]), [grade]);
+  const shown = useCountUp(reveal.actualPctA, 900, 50, 650);
+  const points = useCountUp(reveal.points, 700, 0, 1450);
   const myShare = reveal.pick === 'a' ? reveal.actualPctA : 100 - reveal.actualPctA;
+  const isLast = index === PROMPTS_PER_DAY - 1;
 
   useEffect(() => {
-    const t = setTimeout(() => setShownPct(reveal.actualPctA), 150);
-    return () => clearTimeout(t);
-  }, [reveal.actualPctA]);
+    const t1 = setTimeout(() => setPhase('fill'), 650);
+    const t2 = setTimeout(() => {
+      setPhase('settled');
+      buzz(grade === 'bullseye' ? 40 : 15);
+    }, 1550);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [grade]);
 
   return (
-    <div className="stack fade-in">
-      <PromptCard prompt={prompt} index={-1} />
-      <SplitBar a={prompt.a} b={prompt.b} pctA={shownPct} marker={reveal.guess} />
-      <div className={`result ${grade}`}>
-        <div className="result-points">
-          {GRADE_EMOJI[grade]} +{points}
+    <div className="screen">
+      <Confetti fire={phase === 'settled' && grade === 'bullseye'} />
+      <PromptCard prompt={prompt} index={index} compact />
+      <p className="step">
+        {phase === 'tally' ? <span className="dots-loading">Tallying the room</span> : <>The room has spoken</>}
+      </p>
+      <Meter
+        a={prompt.a}
+        b={prompt.b}
+        pct={phase === 'tally' ? 50 : reveal.actualPctA}
+        shownPct={shown}
+        guess={reveal.guess}
+        pending={phase === 'tally'}
+        settled={phase === 'settled'}
+      />
+      <div className={`result g-${grade} ${phase === 'settled' ? 'in' : ''}`} aria-live="polite">
+        <div className="result-top">
+          <span className="stamp">{GRADE_LABEL[grade]}</span>
+          <span className="result-points">+{points}</span>
         </div>
-        <div className="result-quip">{quip}</div>
-        <div className="muted small">
-          You guessed {reveal.guess}% · room says {reveal.actualPctA}% · {reveal.total} vote{reveal.total === 1 ? '' : 's'}
-          {reveal.total < 10 && ' · early bird, the room is still filling up'}
-        </div>
-        {myShare < 50 && <div className="small">🙃 You’re in the minority on this one.</div>}
+        <p className="result-quip">{quip}</p>
+        <p className="result-meta">
+          {Math.abs(reveal.guess - reveal.actualPctA)}% off · {reveal.total.toLocaleString()} vote{reveal.total === 1 ? '' : 's'}
+          {' · '}
+          {myShare >= 50 ? `you’re with the ${myShare}%` : `🙃 you’re in the ${myShare}%`}
+        </p>
+        {reveal.total < 10 && <p className="result-note">Early bird: the room is still filling up.</p>}
       </div>
-      <button className="btn primary big" onClick={onNext}>{isLast ? 'See my results' : 'Next prompt →'}</button>
+      <button className="btn btn-primary btn-xl" onClick={onNext} disabled={phase !== 'settled'}>
+        {isLast ? 'See my results' : 'Next debate'} <span aria-hidden>→</span>
+      </button>
     </div>
   );
 }
 
 function SummaryView({ state, onLeaderboard, onSuggest }: { state: StateResponse; onLeaderboard: () => void; onSuggest: () => void }) {
   const s = state.summary!;
-  const score = useCountUp(s.score, 900);
+  const score = useCountUp(s.score, 1100, 0, 150);
   const [busy, setBusy] = useState<string | null>(null);
+  const [celebrate, setCelebrate] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setCelebrate(s.score >= 380), 1250);
+    return () => clearTimeout(t);
+  }, [s.score]);
 
   const act = async (path: string) => {
+    buzz();
     setBusy(path);
     try {
       const res = await api.post<OkResponse>(path);
       showToast({ text: res.message ?? 'Done!', appearance: 'success' });
     } catch (e) {
-      if (!(e instanceof ApiError && e.code === 'LOGIN_REQUIRED')) showToast(e instanceof Error ? e.message : 'Failed');
+      if (!isLoginErr(e)) showToast(errMsg(e));
     } finally {
       setBusy(null);
     }
   };
 
   return (
-    <div className="stack center fade-in summary">
-      <div className="big-emoji">{s.titleEmoji}</div>
-      <div className="score">
-        {score}<span className="muted">/{MAX_POINTS_PER_DAY}</span>
-      </div>
-      <div className="title-badge">{s.title}</div>
-      <div className="grid-emoji">{s.grid}</div>
-      <div className="row chips">
-        <span className="chip">🏅 #{s.rank} of {s.players}</span>
-        <span className="chip">🔥 {state.stats.streak} streak</span>
-        {s.contrarianCount >= 3 && <span className="chip">🙃 Contrarian ×{s.contrarianCount}</span>}
-      </div>
+    <div className="screen summary">
+      <Confetti fire={celebrate} pieces={160} />
+      <section className="ticket">
+        <div className="ticket-head">
+          <span>Room #{state.day} · results</span>
+          <span>r/{state.subreddit}</span>
+        </div>
+        <div className="ticket-score">
+          <span className="ticket-emoji">{s.titleEmoji}</span>
+          <span className="score-num">{score}</span>
+          <span className="score-max">/{MAX_POINTS_PER_DAY}</span>
+        </div>
+        <div className="title-badge">{s.title}</div>
+        <div className="ticket-stats">
+          <div><b>#{s.rank}</b><span>of {s.players.toLocaleString()}</span></div>
+          <div><b>🔥 {state.stats.streak}</b><span>day streak</span></div>
+          <div><b>{s.contrarianCount}</b><span>contrarian</span></div>
+        </div>
+        <ol className="breakdown">
+          {state.prompts.map((p, i) => {
+            const a = state.answers[i];
+            if (!a) return null;
+            const g = gradeFor(a.points);
+            return (
+              <li key={p.id}>
+                <span className="bd-q">{p.q}</span>
+                <span className="bd-bar">
+                  <i className="bd-fill" style={{ width: `${a.actualPctA}%` }} />
+                  <i className="bd-you" style={{ left: `${a.guess}%` }} />
+                </span>
+                <span className={`bd-pts g-${g}`}>{a.points}</span>
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+
       <div className="actions">
-        <button className="btn primary" disabled={busy !== null} onClick={() => void act('/api/share')}>💬 Share to comments</button>
-        <button className="btn" disabled={busy !== null} onClick={() => void act('/api/flair')}>🏷️ Wear my title</button>
-        <button className="btn" onClick={onLeaderboard}>🏆 Leaderboard</button>
-        <button className="btn" onClick={onSuggest}>✨ Shape tomorrow</button>
+        <button className="btn btn-primary btn-xl" disabled={busy !== null} onClick={() => void act('/api/share')}>
+          💬 Share to comments
+        </button>
+        <div className="actions-row">
+          <button className="btn btn-soft" disabled={busy !== null} onClick={() => void act('/api/flair')}>🏷️ Wear title</button>
+          <button className="btn btn-soft" onClick={onLeaderboard}>🏆 Leaderboard</button>
+        </div>
+        <button className="shape-card" onClick={onSuggest}>
+          <span className="shape-emoji">✨</span>
+          <span>
+            <b>Shape tomorrow’s room</b>
+            <small>Suggest or upvote debates for future rounds</small>
+          </span>
+          <span aria-hidden>›</span>
+        </button>
       </div>
       <Countdown />
     </div>
@@ -395,12 +494,13 @@ function Countdown() {
   next.setUTCHours(12, 0, 0, 0);
   if (next.getTime() <= now) next.setUTCDate(next.getUTCDate() + 1);
   const ms = next.getTime() - now;
-  const h = Math.floor(ms / 3_600_000);
-  const m = Math.floor((ms % 3_600_000) / 60_000);
-  const sec = Math.floor((ms % 60_000) / 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
   return (
-    <p className="muted small">
-      Next room opens in {h}h {String(m).padStart(2, '0')}m {String(sec).padStart(2, '0')}s
+    <p className="countdown">
+      Next room opens in{' '}
+      <b>
+        {pad(Math.floor(ms / 3_600_000))}:{pad(Math.floor((ms % 3_600_000) / 60_000))}:{pad(Math.floor((ms % 60_000) / 1000))}
+      </b>
     </p>
   );
 }
@@ -409,9 +509,15 @@ function Countdown() {
 // Sheets
 // ---------------------------------------------------------------------------
 function SheetFrame({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal aria-label={title}>
+        <div className="sheet-grabber" />
         <div className="sheet-head">
           <h3>{title}</h3>
           <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
@@ -422,36 +528,60 @@ function SheetFrame({ title, onClose, children }: { title: string; onClose: () =
   );
 }
 
-function LeaderboardSheet({ onClose }: { onClose: () => void }) {
+function LeaderboardSheet({ me, onClose }: { me: string | null; onClose: () => void }) {
   const [tab, setTab] = useState<'day' | 'allTime'>('day');
   const [data, setData] = useState<LeaderboardResponse | null>(null);
   useEffect(() => {
     api.get<LeaderboardResponse>('/api/leaderboard').then(setData, () => showToast('Could not load leaderboard'));
   }, []);
   const rows = data?.[tab] ?? [];
+  const podium = rows.slice(0, 3);
+  const rest = rows.slice(3);
   const myRank = tab === 'day' ? data?.me.dayRank : data?.me.allTimeRank;
+
   return (
     <SheetFrame title="Leaderboard" onClose={onClose}>
-      <div className="tabs">
-        <button className={tab === 'day' ? 'active' : ''} onClick={() => setTab('day')}>This round</button>
-        <button className={tab === 'allTime' ? 'active' : ''} onClick={() => setTab('allTime')}>All time</button>
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === 'day'} className={tab === 'day' ? 'active' : ''} onClick={() => setTab('day')}>This room</button>
+        <button role="tab" aria-selected={tab === 'allTime'} className={tab === 'allTime' ? 'active' : ''} onClick={() => setTab('allTime')}>All time</button>
       </div>
       {!data ? (
         <div className="spinner" />
       ) : rows.length === 0 ? (
-        <p className="muted center">Nobody yet. Be the first to read the room!</p>
+        <div className="empty">
+          <div className="state-emoji">🪑</div>
+          <p>The room is empty. Be the first to read it!</p>
+        </div>
       ) : (
-        <ol className="board">
-          {rows.map((r) => (
-            <li key={r.rank}>
-              <span className="rank">{r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : `#${r.rank}`}</span>
-              <span className="name">u/{r.username}</span>
-              <span className="pts">{r.score}</span>
-            </li>
-          ))}
-        </ol>
+        <>
+          <div className="podium">
+            {[1, 0, 2].map((i) => {
+              const r = podium[i];
+              if (!r) return <div key={i} className="podium-slot empty-slot" />;
+              return (
+                <div key={i} className={`podium-slot p${i + 1} ${r.username === me ? 'is-me' : ''}`}>
+                  <span className="podium-medal">{['🥇', '🥈', '🥉'][i]}</span>
+                  <span className="podium-name">u/{r.username}</span>
+                  <span className="podium-score">{r.score}</span>
+                  <span className="podium-block" />
+                </div>
+              );
+            })}
+          </div>
+          {rest.length > 0 && (
+            <ol className="board">
+              {rest.map((r) => (
+                <li key={r.rank} className={r.username === me ? 'is-me' : ''}>
+                  <span className="rank">#{r.rank}</span>
+                  <span className="name">u/{r.username}</span>
+                  <span className="pts">{r.score}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
       )}
-      {myRank && <p className="muted small center">You’re #{myRank}</p>}
+      {myRank && <p className="board-me">You’re <b>#{myRank}</b> {tab === 'day' ? 'in this room' : 'all time'}</p>}
     </SheetFrame>
   );
 }
@@ -462,6 +592,7 @@ function SuggestSheet({ onClose }: { onClose: () => void }) {
   const [a, setA] = useState('');
   const [b, setB] = useState('');
   const [busy, setBusy] = useState(false);
+  const [voted, setVoted] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(() => {
     api.get<SuggestionsResponse>('/api/suggestions').then(setData, () => setData({ items: [], remainingToday: 0 }));
@@ -469,11 +600,12 @@ function SuggestSheet({ onClose }: { onClose: () => void }) {
   useEffect(refresh, [refresh]);
 
   const vote = async (id: string) => {
-    setData((d) => d && { ...d, items: d.items.filter((s) => s.id !== id) });
+    buzz();
+    setVoted((v) => new Set(v).add(id));
     try {
       await api.post('/api/suggestions/vote', { id });
     } catch {
-      /* optimistic; ignore */
+      /* optimistic */
     }
   };
 
@@ -482,51 +614,59 @@ function SuggestSheet({ onClose }: { onClose: () => void }) {
     try {
       const res = await api.post<OkResponse>('/api/suggest', { q, a, b });
       showToast({ text: res.message ?? 'Submitted!', appearance: 'success' });
-      setQ(''); setA(''); setB('');
+      setQ('');
+      setA('');
+      setB('');
       refresh();
     } catch (e) {
-      if (!(e instanceof ApiError && e.code === 'LOGIN_REQUIRED')) showToast(e instanceof Error ? e.message : 'Failed');
+      if (!isLoginErr(e)) showToast(errMsg(e));
     } finally {
       setBusy(false);
     }
   };
 
+  const limitHit = data?.remainingToday === 0;
   return (
     <SheetFrame title="Shape tomorrow’s room" onClose={onClose}>
-      <p className="muted small">Upvote prompts you want to see. The top picks get featured in upcoming rounds, with credit.</p>
+      <p className="muted small">Top-voted debates get featured in upcoming rooms, with your name on them.</p>
       {data?.items.length ? (
         <ul className="sugg-list">
           {data.items.map((s) => (
             <li key={s.id}>
-              <div>
+              <div className="sugg-body">
                 <div className="sugg-q">{s.q}</div>
-                <div className="muted small">{s.a} vs {s.b} · u/{s.author}</div>
+                <div className="sugg-opts"><span className="ta">{s.a}</span><span className="vs">vs</span><span className="tb">{s.b}</span></div>
+                <div className="muted tiny">u/{s.author}</div>
               </div>
-              <button className="btn small" onClick={() => void vote(s.id)}>⬆ {s.votes}</button>
+              <button className={`vote ${voted.has(s.id) ? 'voted' : ''}`} onClick={() => void vote(s.id)} disabled={voted.has(s.id)} aria-label="Upvote">
+                <span>▲</span>
+                <b>{s.votes + (voted.has(s.id) ? 1 : 0)}</b>
+              </button>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="muted small">No pending prompts to vote on. Add one!</p>
+        data && <p className="empty small">No pending debates to vote on. Start one!</p>
       )}
 
       <div className="form">
-        <label>
-          Question <span className="muted">{q.length}/70</span>
-          <input value={q} maxLength={70} onChange={(e) => setQ(e.target.value)} placeholder="e.g. Is cereal a soup?" />
+        <label className="field">
+          <span className="field-label">Debate <em>{q.length}/70</em></span>
+          <input value={q} maxLength={70} onChange={(e) => setQ(e.target.value)} placeholder="Is a burrito a sandwich?" />
         </label>
-        <div className="row">
-          <label className="grow">
-            Option A
-            <input value={a} maxLength={24} onChange={(e) => setA(e.target.value)} placeholder="🥣 Yes" />
+        <div className="field-row">
+          <label className="field">
+            <span className="field-label ta">Side A</span>
+            <input value={a} maxLength={24} onChange={(e) => setA(e.target.value)} placeholder="🌯 Sandwich" />
           </label>
-          <label className="grow">
-            Option B
-            <input value={b} maxLength={24} onChange={(e) => setB(e.target.value)} placeholder="🙅 No" />
+          <span className="vs">vs</span>
+          <label className="field">
+            <span className="field-label tb">Side B</span>
+            <input value={b} maxLength={24} onChange={(e) => setB(e.target.value)} placeholder="🙅 No way" />
           </label>
         </div>
-        <button className="btn primary" disabled={busy || !q || !a || !b || data?.remainingToday === 0} onClick={() => void submit()}>
-          {data?.remainingToday === 0 ? 'Daily limit reached' : `Submit prompt${data ? ` (${data.remainingToday} left today)` : ''}`}
+        <button className="btn btn-primary" disabled={busy || !q.trim() || !a.trim() || !b.trim() || limitHit} onClick={() => void submit()}>
+          {limitHit ? 'Daily limit reached' : `Submit debate${data ? ` · ${data.remainingToday} left today` : ''}`}
         </button>
       </div>
     </SheetFrame>
@@ -537,38 +677,19 @@ function HowToSheet({ onClose }: { onClose: () => void }) {
   return (
     <SheetFrame title="How to play" onClose={onClose}>
       <ol className="howto">
-        <li><strong>Pick your side.</strong> Be honest, your vote becomes part of the room.</li>
-        <li><strong>Predict the split.</strong> Slide to the % of the subreddit you think picked the left option.</li>
-        <li><strong>Get scored.</strong> 100 points for a perfect read, −2 for every point you’re off.</li>
+        <li><span className="howto-n">1</span><div><b>Pick your side.</b><p>Be honest. Your vote becomes part of the room.</p></div></li>
+        <li><span className="howto-n">2</span><div><b>Predict the split.</b><p>Drag to the % of the subreddit you think picked the left side.</p></div></li>
+        <li><span className="howto-n">3</span><div><b>Get scored.</b><p>100 for a perfect read, minus 2 for every point you’re off.</p></div></li>
       </ol>
-      <p className="small">
-        🎯 94+ · 🟩 75+ · 🟨 45+ · 🟥 below. Score 450+/500 to earn <strong>🔮 Mind Reader</strong>.
-        A new room opens every day; play daily to keep your 🔥 streak.
+      <div className="grades">
+        <span className="g-bullseye">Bullseye 94+</span>
+        <span className="g-close">Close 75+</span>
+        <span className="g-off">Off 45+</span>
+        <span className="g-miss">Way off</span>
+      </div>
+      <p className="small muted">
+        Score 450+/500 to earn <b>🔮 Mind Reader</b>. A new room opens every day at 12:00 UTC. Play daily to keep your 🔥 streak.
       </p>
     </SheetFrame>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Hooks
-// ---------------------------------------------------------------------------
-function useCountUp(target: number, durationMs: number): number {
-  const [value, setValue] = useState(0);
-  const raf = useRef(0);
-  useEffect(() => {
-    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) {
-      setValue(target);
-      return;
-    }
-    const start = performance.now();
-    const tick = (t: number) => {
-      const p = Math.min(1, (t - start) / durationMs);
-      setValue(Math.round(target * (1 - Math.pow(1 - p, 3))));
-      if (p < 1) raf.current = requestAnimationFrame(tick);
-    };
-    raf.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf.current);
-  }, [target, durationMs]);
-  return value;
 }

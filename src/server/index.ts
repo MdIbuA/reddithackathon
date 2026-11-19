@@ -157,6 +157,7 @@ route('GET', '/api/state', async (): Promise<StateResponse> => {
   return {
     day,
     isToday: day === currentDay,
+    subreddit: context.subredditName,
     username: username ?? null,
     snoovatar: snoovatar ?? null,
     prompts: round.prompts,
