@@ -55,5 +55,9 @@
   },
   "dev": {
     "subreddit": "readtheroom_dev"
+  },
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build"
   }
 }

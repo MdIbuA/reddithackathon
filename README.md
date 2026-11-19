@@ -75,6 +75,7 @@ tests/      unit tests
 git clone https://github.com/MdIbuA/reddithackathon && cd reddithackathon
 npm install
 npm run login        # once: log in to Reddit
+npm run setup        # once: build + register the app (devvit init)
 npm run dev          # playtest in your dev subreddit
 npm test && npm run typecheck
 npm run deploy       # upload a new version

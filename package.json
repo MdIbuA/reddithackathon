@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "login": "devvit login",
-    "dev": "devvit playtest",
+    "dev": "vite build && devvit playtest",
     "build": "vite build",
     "deploy": "npm run build && devvit upload",
     "launch": "npm run deploy && devvit publish",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "setup": "vite build && devvit init"
   },
   "dependencies": {
     "@devvit/web": "^0.15.4",
