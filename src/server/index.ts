@@ -68,8 +68,13 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 function send(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(body));
+  // Devvit's runtime rejects responses without an explicit Content-Length.
+  const payload = JSON.stringify(body ?? {});
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(payload),
+  });
+  res.end(payload);
 }
 
 const server = createServer(async (req, res) => {
