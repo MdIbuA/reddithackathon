@@ -9,6 +9,8 @@ export type Prompt = {
   b: string;
   /** Reddit username if this prompt was suggested by the community. */
   author?: string;
+  /** Where the debate came from (curated if absent). */
+  source?: 'mod' | 'community';
 };
 
 export type Reveal = {
@@ -84,7 +86,9 @@ export type LeaderboardEntry = { rank: number; username: string; score: number }
 export type LeaderboardResponse = {
   day: LeaderboardEntry[];
   allTime: LeaderboardEntry[];
-  me: { dayRank: number | null; allTimeRank: number | null };
+  /** All-time count of minority picks: rewards hot takes. */
+  contrarians: LeaderboardEntry[];
+  me: { dayRank: number | null; allTimeRank: number | null; contraRank: number | null };
 };
 
 export type Suggestion = { id: string; q: string; a: string; b: string; author: string; votes: number };

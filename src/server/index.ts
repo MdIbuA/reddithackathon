@@ -13,6 +13,7 @@ import type {
 import { MAX_POINTS_PER_DAY, PROMPTS_PER_DAY } from '../shared/scoring';
 import { validateSuggestion } from './moderation';
 import {
+  addModDebate,
   addSuggestion,
   buildNextRound,
   clearSuggestions,
@@ -312,6 +313,36 @@ route('POST', '/internal/menu/new-round', async () => {
   const created = await createRound('menu');
   if (!created) return { showToast: 'A round is already being created — try again in a minute.' };
   return { showToast: { text: `Round #${created.day} posted!`, appearance: 'success' }, navigateTo: created.url };
+});
+
+route('POST', '/internal/menu/add-debate', async () => ({
+  showForm: {
+    name: 'customDebate',
+    form: {
+      title: 'Add a debate for your community',
+      description: 'Mod-written debates get first priority in the next room. Keep it fun and genuinely split.',
+      acceptLabel: 'Queue debate',
+      fields: [
+        { type: 'string', name: 'q', label: 'Debate question (5–70 chars)', required: true, helpText: 'e.g. Best era of this sub?' },
+        { type: 'string', name: 'a', label: 'Side A (start with an emoji!)', required: true, helpText: 'e.g. 🦖 The early days' },
+        { type: 'string', name: 'b', label: 'Side B', required: true, helpText: 'e.g. ✨ Right now' },
+      ],
+    },
+  },
+}));
+
+route('POST', '/internal/form/custom-debate', async (body) => {
+  const raw = (body ?? {}) as Record<string, unknown>;
+  const values = (raw.values && typeof raw.values === 'object' ? raw.values : raw) as Record<string, unknown>;
+  const v = validateSuggestion(values);
+  if (!v.ok) return { showToast: v.error };
+  const queued = await addModDebate(v.value, context.username ?? 'mod');
+  return {
+    showToast: {
+      text: `Queued! ${queued} mod debate${queued === 1 ? '' : 's'} waiting for the next room.`,
+      appearance: 'success',
+    },
+  };
 });
 
 route('POST', '/internal/menu/clear-suggestions', async () => {

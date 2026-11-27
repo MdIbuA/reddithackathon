@@ -1,6 +1,6 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
-  "name": "read-the-room",
+  "name": "readtheroom-daily",
   "post": {
     "dir": "dist/client",
     "entrypoints": {
@@ -19,7 +19,8 @@
     "reddit": {
       "enable": true,
       "scope": "user"
-    }
+    },
+    "journeys": true
   },
   "menu": {
     "items": [
@@ -31,6 +32,13 @@
         "endpoint": "/internal/menu/new-round"
       },
       {
+        "label": "Read the Room: add a custom debate",
+        "description": "Write a debate for your community; it gets priority in the next room",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/add-debate"
+      },
+      {
         "label": "Read the Room: clear suggestion queue",
         "description": "Removes all pending community prompt suggestions",
         "location": "subreddit",
@@ -38,6 +46,9 @@
         "endpoint": "/internal/menu/clear-suggestions"
       }
     ]
+  },
+  "forms": {
+    "customDebate": "/internal/form/custom-debate"
   },
   "scheduler": {
     "tasks": {

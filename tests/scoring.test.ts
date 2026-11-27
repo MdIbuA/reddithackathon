@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayPctA, divisiveIndex, gradeFor, lopsidedIndex, nextStreak, pointsFor, rescore, scoringPctA, titleFor } from '../src/shared/scoring';
+import { MAX_POINTS_PER_DAY, displayPctA, divisiveIndex, gradeForIndex, gradeFor, lopsidedIndex, nextStreak, pointsFor, rescore, scoringPctA, titleFor } from '../src/shared/scoring';
 import { validateSuggestion } from '../src/server/moderation';
 import { CURATED_PROMPTS } from '../src/server/prompts';
 
@@ -24,7 +24,10 @@ describe('scoring', () => {
     expect(gradeFor(80)).toBe('close');
     expect(gradeFor(50)).toBe('off');
     expect(gradeFor(10)).toBe('miss');
-    expect(titleFor(500).name).toBe('Mind Reader');
+    expect(MAX_POINTS_PER_DAY).toBe(600);
+    expect(titleFor(600).name).toBe('Mind Reader');
+    expect(titleFor(540).name).toBe('Mind Reader');
+    expect(titleFor(539).name).toBe('Room Reader');
     expect(titleFor(0).name).toBe('Certified Contrarian');
   });
   it('streaks', () => {
@@ -39,8 +42,13 @@ describe('final scoring', () => {
   it('re-scores guesses against the final split', () => {
     // Early player guessed 70 when the room was tiny; room finished at 70 -> perfect.
     const r = rescore([70, 30, 50, 90, 10], [70, 30, 60, 80, 10]);
-    expect(r.points).toEqual([100, 100, 80, 80, 100]);
-    expect(r.total).toBe(460);
+    expect(r.points).toEqual([100, 100, 80, 80, 200]); // last debate is the 2x Final Boss
+    expect(r.total).toBe(560);
+  });
+  it('grades the Final Boss on accuracy, not doubled points', () => {
+    expect(gradeForIndex(4, 200)).toBe('bullseye');
+    expect(gradeForIndex(4, 160)).toBe('close');
+    expect(gradeForIndex(0, 160)).toBe('bullseye'); // impossible in practice, but shows the scale
   });
   it('treats missing final splits as 50/50', () => {
     expect(rescore([50], []).total).toBe(100);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { showToast } from '@devvit/web/client';
+import { showShareSheet, showToast } from '@devvit/web/client';
 import type {
   AnswerResponse,
   LeaderboardResponse,
@@ -12,8 +12,9 @@ import type {
   Verdict,
   YesterdayInfo,
 } from '../shared/api';
-import { MAX_POINTS_PER_DAY, PROMPTS_PER_DAY, gradeFor, type Grade } from '../shared/scoring';
+import { BOSS_INDEX, MAX_POINTS_PER_DAY, PROMPTS_PER_DAY, gradeForIndex, multiplierFor, type Grade } from '../shared/scoring';
 import { ApiError, api } from './api';
+import { isMuted, setMuted, sfx } from './sfx';
 import { Confetti, Meter, buzz, splitLabel, useCountUp } from './ui';
 
 type View =
@@ -186,6 +187,7 @@ function Header(props: {
               🔥<b>{props.streak}</b>
             </span>
           )}
+          <MuteButton />
           <button className="icon-btn" onClick={props.onLeaderboard} aria-label="Leaderboard">🏆</button>
           <button className="icon-btn" onClick={props.onHelp} aria-label="How to play">?</button>
         </div>
@@ -194,11 +196,29 @@ function Header(props: {
         {props.answers.map((a, i) => (
           <span
             key={i}
-            className={`seg ${a ? `done g-${gradeFor(a.points)}` : ''} ${i === props.current ? 'current' : ''}`}
+            className={`seg ${a ? `done g-${gradeForIndex(i, a.points)}` : ''} ${i === props.current ? 'current' : ''}`}
           />
         ))}
       </div>
     </header>
+  );
+}
+
+function MuteButton() {
+  const [m, setM] = useState(isMuted());
+  return (
+    <button
+      className="icon-btn"
+      onClick={() => {
+        setMuted(!m);
+        setM(!m);
+        if (m) sfx.pick();
+      }}
+      aria-label={m ? 'Unmute sounds' : 'Mute sounds'}
+      aria-pressed={m}
+    >
+      {m ? '🔇' : '🔊'}
+    </button>
   );
 }
 
@@ -224,11 +244,20 @@ function LoadingSkeleton() {
 }
 
 function PromptCard({ prompt, index, compact }: { prompt: Prompt; index: number; compact?: boolean }) {
+  const boss = index === BOSS_INDEX;
   return (
-    <section className={`prompt-card ${compact ? 'compact' : ''}`}>
+    <section className={`prompt-card ${compact ? 'compact' : ''} ${boss ? 'is-boss' : ''}`}>
       <div className="eyebrow">
-        <span>Debate {index + 1} <span className="dim">/ {PROMPTS_PER_DAY}</span></span>
-        {prompt.author && <span className="credit">✨ by u/{prompt.author}</span>}
+        {boss ? (
+          <span className="boss-tag">👑 Final Boss · 2× points</span>
+        ) : (
+          <span>Debate {index + 1} <span className="dim">/ {PROMPTS_PER_DAY}</span></span>
+        )}
+        {prompt.source === 'mod' ? (
+          <span className="credit">📌 Mod pick</span>
+        ) : (
+          prompt.author && <span className="credit">✨ by u/{prompt.author}</span>
+        )}
       </div>
       <h2 className="prompt-q">{prompt.q}</h2>
     </section>
@@ -288,14 +317,20 @@ function Intro({ state, onStart, onHowTo, onVerdict }: { state: StateResponse; o
 
 function PickStep({ prompt, index, onPick }: { prompt: Prompt; index: number; onPick: (p: Pick) => void }) {
   const [chosen, setChosen] = useState<Pick | null>(null);
+  const boss = index === BOSS_INDEX;
+  useEffect(() => {
+    if (boss) sfx.boss();
+  }, [boss]);
   const choose = (p: Pick) => {
     if (chosen) return;
     buzz();
+    sfx.pick();
     setChosen(p);
     setTimeout(() => onPick(p), 260);
   };
   return (
     <div className="screen">
+      {boss && <div className="boss-banner" aria-hidden><span>👑</span> FINAL BOSS <span>2×</span></div>}
       <PromptCard prompt={prompt} index={index} />
       <p className="step"><span className="step-no">1</span> Your honest take</p>
       <div className={`options ${chosen ? 'has-choice' : ''}`}>
@@ -332,6 +367,7 @@ function PredictStep(props: {
 
   const submit = async () => {
     buzz(18);
+    sfx.lock();
     setBusy(true);
     try {
       props.onAnswered(await api.post<AnswerResponse>('/api/answer', { index, pick, guess }));
@@ -353,7 +389,7 @@ function PredictStep(props: {
       <Meter a={prompt.a} b={prompt.b} pct={guess} onChange={setGuess} />
       <p className="hint">Drag the divider to where you think the room landed</p>
       <button className="btn btn-primary btn-xl" onClick={() => void submit()} disabled={busy}>
-        {busy ? <span className="dots-loading">Reading the room</span> : <>Lock it in · {guess}%</>}
+        {busy ? <span className="dots-loading">Reading the room</span> : <>Lock it in · {guess}%{multiplierFor(index) > 1 ? ' · 2×' : ''}</>}
       </button>
     </div>
   );
@@ -361,7 +397,7 @@ function PredictStep(props: {
 
 function RevealStep({ prompt, index, reveal, onNext }: { prompt: Prompt; index: number; reveal: Reveal; onNext: () => void }) {
   const [phase, setPhase] = useState<'tally' | 'fill' | 'settled'>('tally');
-  const grade = gradeFor(reveal.points);
+  const grade = gradeForIndex(index, reveal.points);
   const quip = useMemo(() => pickRandom(QUIPS[grade]), [grade]);
   const shown = useCountUp(reveal.actualPctA, 900, 50, 650);
   const points = useCountUp(reveal.points, 700, 0, 1450);
@@ -373,6 +409,7 @@ function RevealStep({ prompt, index, reveal, onNext }: { prompt: Prompt; index: 
     const t2 = setTimeout(() => {
       setPhase('settled');
       buzz(grade === 'bullseye' ? 40 : 15);
+      sfx.reveal(grade);
     }, 1550);
     return () => {
       clearTimeout(t1);
@@ -399,7 +436,10 @@ function RevealStep({ prompt, index, reveal, onNext }: { prompt: Prompt; index: 
       <div className={`result g-${grade} ${phase === 'settled' ? 'in' : ''}`} aria-live="polite">
         <div className="result-top">
           <span className="stamp">{GRADE_LABEL[grade]}</span>
-          <span className="result-points">+{points}</span>
+          <span className="result-points">
+            +{points}
+            {multiplierFor(index) > 1 && <small className="mult">2×</small>}
+          </span>
         </div>
         <p className="result-quip">{quip}</p>
         <p className="result-meta">
@@ -423,7 +463,11 @@ function SummaryView({ state, onLeaderboard, onSuggest, onVerdict }: { state: St
   const [celebrate, setCelebrate] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setCelebrate(s.score >= 380), 1250);
+    const t = setTimeout(() => {
+      const great = s.score >= MAX_POINTS_PER_DAY * 0.76;
+      setCelebrate(great);
+      if (great) sfx.fanfare();
+    }, 1250);
     return () => clearTimeout(t);
   }, [s.score]);
 
@@ -437,6 +481,18 @@ function SummaryView({ state, onLeaderboard, onSuggest, onVerdict }: { state: St
       if (!isLoginErr(e)) showToast(errMsg(e));
     } finally {
       setBusy(null);
+    }
+  };
+
+  const challenge = async () => {
+    buzz();
+    try {
+      await showShareSheet({
+        title: `Read the Room #${state.day}`,
+        text: `I scored ${s.score}/${MAX_POINTS_PER_DAY} reading r/${state.subreddit} ${s.titleEmoji} ${s.grid}\nThink you know the room better?`,
+      });
+    } catch {
+      showToast('Sharing isn’t available here.');
     }
   };
 
@@ -464,7 +520,7 @@ function SummaryView({ state, onLeaderboard, onSuggest, onVerdict }: { state: St
             const a = state.answers[i];
             if (!a) return null;
             const pts = s.final && s.finalPoints ? (s.finalPoints[i] ?? a.points) : a.points;
-            const g = gradeFor(pts);
+            const g = gradeForIndex(i, pts);
             return (
               <li key={p.id}>
                 <span className="bd-q">{p.q}</span>
@@ -483,9 +539,10 @@ function SummaryView({ state, onLeaderboard, onSuggest, onVerdict }: { state: St
         <button className="btn btn-primary btn-xl" disabled={busy !== null} onClick={() => void act('/api/share')}>
           💬 Share to comments
         </button>
-        <div className="actions-row">
+        <div className="actions-row three">
           <button className="btn btn-soft" disabled={busy !== null} onClick={() => void act('/api/flair')}>🏷️ Wear title</button>
-          <button className="btn btn-soft" onClick={onLeaderboard}>🏆 Leaderboard</button>
+          <button className="btn btn-soft" onClick={onLeaderboard}>🏆 Board</button>
+          <button className="btn btn-soft" onClick={() => void challenge()}>📤 Challenge</button>
         </div>
         <button className="shape-card" onClick={onSuggest}>
           <span className="shape-emoji">✨</span>
@@ -588,7 +645,7 @@ function SheetFrame({ title, onClose, children }: { title: string; onClose: () =
 }
 
 function LeaderboardSheet({ me, onClose }: { me: string | null; onClose: () => void }) {
-  const [tab, setTab] = useState<'day' | 'allTime'>('day');
+  const [tab, setTab] = useState<'day' | 'allTime' | 'contrarians'>('day');
   const [data, setData] = useState<LeaderboardResponse | null>(null);
   useEffect(() => {
     api.get<LeaderboardResponse>('/api/leaderboard').then(setData, () => showToast('Could not load leaderboard'));
@@ -596,14 +653,17 @@ function LeaderboardSheet({ me, onClose }: { me: string | null; onClose: () => v
   const rows = data?.[tab] ?? [];
   const podium = rows.slice(0, 3);
   const rest = rows.slice(3);
-  const myRank = tab === 'day' ? data?.me.dayRank : data?.me.allTimeRank;
+  const myRank = tab === 'day' ? data?.me.dayRank : tab === 'allTime' ? data?.me.allTimeRank : data?.me.contraRank;
+  const unit = tab === 'contrarians' ? 'hot takes' : 'pts';
 
   return (
     <SheetFrame title="Leaderboard" onClose={onClose}>
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'day'} className={tab === 'day' ? 'active' : ''} onClick={() => setTab('day')}>This room</button>
         <button role="tab" aria-selected={tab === 'allTime'} className={tab === 'allTime' ? 'active' : ''} onClick={() => setTab('allTime')}>All time</button>
+        <button role="tab" aria-selected={tab === 'contrarians'} className={tab === 'contrarians' ? 'active' : ''} onClick={() => setTab('contrarians')}>🙃 Contrarians</button>
       </div>
+      {tab === 'contrarians' && <p className="muted small tab-note">Most picks against the majority. Hot takes welcome.</p>}
       {!data ? (
         <div className="spinner" />
       ) : rows.length === 0 ? (
@@ -621,7 +681,7 @@ function LeaderboardSheet({ me, onClose }: { me: string | null; onClose: () => v
                 <div key={i} className={`podium-slot p${i + 1} ${r.username === me ? 'is-me' : ''}`}>
                   <span className="podium-medal">{['🥇', '🥈', '🥉'][i]}</span>
                   <span className="podium-name">u/{r.username}</span>
-                  <span className="podium-score">{r.score}</span>
+                  <span className="podium-score">{r.score}<small> {unit}</small></span>
                   <span className="podium-block" />
                 </div>
               );
@@ -640,7 +700,11 @@ function LeaderboardSheet({ me, onClose }: { me: string | null; onClose: () => v
           )}
         </>
       )}
-      {myRank && <p className="board-me">You’re <b>#{myRank}</b> {tab === 'day' ? 'in this room' : 'all time'}</p>}
+      {myRank && (
+        <p className="board-me">
+          You’re <b>#{myRank}</b> {tab === 'day' ? 'in this room' : tab === 'allTime' ? 'all time' : 'among contrarians'}
+        </p>
+      )}
     </SheetFrame>
   );
 }
@@ -738,7 +802,8 @@ function HowToSheet({ onClose }: { onClose: () => void }) {
       <ol className="howto">
         <li><span className="howto-n">1</span><div><b>Pick your side.</b><p>Be honest. Your vote becomes part of the room.</p></div></li>
         <li><span className="howto-n">2</span><div><b>Predict the split.</b><p>Drag to the % of the subreddit you think picked the left side.</p></div></li>
-        <li><span className="howto-n">3</span><div><b>Get scored.</b><p>100 for a perfect read, minus 2 for every point you’re off.</p></div></li>
+        <li><span className="howto-n">3</span><div><b>Get scored.</b><p>100 for a perfect read, minus 2 for every point you’re off. The 👑 Final Boss debate counts double.</p></div></li>
+        <li><span className="howto-n">4</span><div><b>Scores lock tomorrow.</b><p>When the next room opens, everyone is re-scored against the final split. Vote against the crowd to climb the 🙃 Contrarians board.</p></div></li>
       </ol>
       <div className="grades">
         <span className="g-bullseye">Bullseye 94+</span>
@@ -747,7 +812,7 @@ function HowToSheet({ onClose }: { onClose: () => void }) {
         <span className="g-miss">Way off</span>
       </div>
       <p className="small muted">
-        Score 450+/500 to earn <b>🔮 Mind Reader</b>. A new room opens every day at 12:00 UTC. Play daily to keep your 🔥 streak.
+        Score {Math.round(MAX_POINTS_PER_DAY * 0.9)}+/{MAX_POINTS_PER_DAY} to earn <b>🔮 Mind Reader</b>. A new room opens every day at 12:00 UTC. Play daily to keep your 🔥 streak.
       </p>
     </SheetFrame>
   );

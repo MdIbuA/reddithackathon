@@ -5,13 +5,13 @@ import {
   PROMPTS_PER_DAY,
   displayPctA,
   divisiveIndex,
-  gradeFor,
+  gradeForIndex,
   lopsidedIndex,
   nextStreak,
-  pointsFor,
   rescore,
   scoringPctA,
   titleFor,
+  weightedPoints,
 } from '../shared/scoring';
 import { CURATED_PROMPTS } from './prompts';
 
@@ -30,6 +30,9 @@ const K = {
   summary: (day: number, userId: string) => `rtr:sum:${day}:${userId}`,
   dayBoard: (day: number) => `rtr:board:${day}`,
   allTimeBoard: 'rtr:board:all',
+  contraBoard: 'rtr:board:contra',
+  modQueue: 'rtr:modq', // zset id -> created timestamp (FIFO)
+  modDebate: (id: string) => `rtr:modq:${id}`,
   names: 'rtr:names',
   user: (userId: string) => `rtr:user:${userId}`,
   curatedCursor: 'rtr:curatedCursor',
@@ -81,15 +84,26 @@ export async function withLock<T>(name: string, fn: () => Promise<T>): Promise<T
   }
 }
 
-/** Builds the next round's prompts: top community picks first, then curated. */
+/** Max mod-written debates per round (oldest first). */
+export const MOD_DEBATES_PER_ROUND = 3;
+
+/** Builds the next round: mod debates first, then top community picks, then curated. */
 export async function buildNextRound(day: number): Promise<Round> {
   const prompts: Prompt[] = [];
 
-  const top = await redis.zRange(K.suggPending, 0, SUGGESTIONS_PER_ROUND - 1, { by: 'rank', reverse: true });
+  const mods = await redis.zRange(K.modQueue, 0, MOD_DEBATES_PER_ROUND - 1, { by: 'rank' });
+  for (const { member: id } of mods) {
+    const m = await redis.hGetAll(K.modDebate(id));
+    if (m.q && m.a && m.b) prompts.push({ id: `m${id}`, q: m.q, a: m.a, b: m.b, source: 'mod' });
+    await redis.zRem(K.modQueue, [id]);
+  }
+
+  const room = Math.min(SUGGESTIONS_PER_ROUND, PROMPTS_PER_DAY - prompts.length);
+  const top = room > 0 ? await redis.zRange(K.suggPending, 0, room - 1, { by: 'rank', reverse: true }) : [];
   for (const { member: id, score } of top) {
     if (score < SUGGESTION_MIN_VOTES) break;
     const s = await redis.hGetAll(K.sugg(id));
-    if (s.q && s.a && s.b) prompts.push({ id: `s${id}`, q: s.q, a: s.a, b: s.b, author: s.author });
+    if (s.q && s.a && s.b) prompts.push({ id: `s${id}`, q: s.q, a: s.a, b: s.b, author: s.author, source: 'community' });
     await redis.zRem(K.suggPending, [id]);
   }
 
@@ -167,7 +181,7 @@ export async function submitAnswer(
     actualPctA: displayPctA(tally),
     scoredPctA,
     total: tally.a + tally.b,
-    points: pointsFor(guess, scoredPctA),
+    points: weightedPoints(index, guess, scoredPctA),
   };
   await redis.hSet(key, { [String(index)]: JSON.stringify(reveal) });
 
@@ -199,6 +213,7 @@ export async function finalizeRound(
   await redis.zAdd(K.dayBoard(day), { member: userId, score });
   await redis.hSet(K.names, { [userId]: username });
   await redis.zIncrBy(K.allTimeBoard, userId, score);
+  if (contrarianCount > 0) await redis.zIncrBy(K.contraBoard, userId, contrarianCount);
 
   // Streaks only advance on the current round, so replaying old posts can't farm them.
   const currentDay = await getCurrentDay();
@@ -218,7 +233,7 @@ export async function finalizeRound(
     score,
     title: title.name,
     titleEmoji: title.emoji,
-    grid: answers.map((a) => GRADE_EMOJI[gradeFor(a.points)]).join(''),
+    grid: answers.map((a, i) => GRADE_EMOJI[gradeForIndex(i, a.points)]).join(''),
     rank: 0,
     players: 0,
     contrarianCount,
@@ -276,13 +291,15 @@ async function rankOf(key: string, userId: string | undefined): Promise<number |
 }
 
 export async function getLeaderboards(day: number, userId: string | undefined) {
-  const [dayTop, allTop, dayRank, allTimeRank] = await Promise.all([
+  const [dayTop, allTop, contraTop, dayRank, allTimeRank, contraRank] = await Promise.all([
     topOf(K.dayBoard(day), 10),
     topOf(K.allTimeBoard, 10),
+    topOf(K.contraBoard, 10),
     rankOf(K.dayBoard(day), userId),
     rankOf(K.allTimeBoard, userId),
+    rankOf(K.contraBoard, userId),
   ]);
-  return { day: dayTop, allTime: allTop, me: { dayRank, allTimeRank } };
+  return { day: dayTop, allTime: allTop, contrarians: contraTop, me: { dayRank, allTimeRank, contraRank } };
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +407,7 @@ export async function closeDay(day: number): Promise<Verdict | null> {
             score: total,
             title: title.name,
             titleEmoji: title.emoji,
-            grid: points.map((p) => GRADE_EMOJI[gradeFor(p)]).join(''),
+            grid: points.map((p, i) => GRADE_EMOJI[gradeForIndex(i, p)]).join(''),
             final: true,
             provisionalScore: prev.provisionalScore ?? provisional,
             finalPoints: points,
@@ -432,4 +449,14 @@ export async function getYesterday(day: number, userId: string | undefined): Pro
       ? { score: s.score, rank: s.rank, title: s.title, titleEmoji: s.titleEmoji, delta: s.score - s.provisionalScore }
       : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Mod-written debates (subreddit-specific content)
+// ---------------------------------------------------------------------------
+export async function addModDebate(p: { q: string; a: string; b: string }, mod: string): Promise<number> {
+  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  await redis.hSet(K.modDebate(id), { ...p, mod, createdAt: String(Date.now()) });
+  await redis.zAdd(K.modQueue, { member: id, score: Date.now() });
+  return redis.zCard(K.modQueue);
 }

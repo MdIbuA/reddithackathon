@@ -1,5 +1,6 @@
 // Reusable visual building blocks: the split meter, confetti, label parsing, hooks.
 import { useEffect, useRef, useState } from 'react';
+import { sfx } from './sfx';
 
 // ---------------------------------------------------------------------------
 // Labels: "🍍 Belongs there" -> { emoji: '🍍', text: 'Belongs there' }
@@ -113,7 +114,10 @@ export function Meter({ a, b, pct, shownPct, guess, onChange, pending, settled }
               value={pct}
               onChange={(e) => {
                 const v = Number(e.target.value);
-                if (v % 10 === 0) buzz(6);
+                if (v % 10 === 0) {
+                  buzz(6);
+                  sfx.tick();
+                }
                 onChange!(v);
               }}
               aria-label={`Percent of the room choosing ${la.text}`}

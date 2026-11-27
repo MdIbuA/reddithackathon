@@ -3,7 +3,11 @@
 
 export const PROMPTS_PER_DAY = 5;
 export const MAX_POINTS_PER_PROMPT = 100;
-export const MAX_POINTS_PER_DAY = PROMPTS_PER_DAY * MAX_POINTS_PER_PROMPT;
+/** The last debate of every room is the Final Boss: double points. */
+export const BOSS_INDEX = PROMPTS_PER_DAY - 1;
+export const multiplierFor = (index: number) => (index === BOSS_INDEX ? 2 : 1);
+export const MAX_POINTS_PER_DAY =
+  Array.from({ length: PROMPTS_PER_DAY }, (_, i) => multiplierFor(i)).reduce((s, m) => s + m, 0) * MAX_POINTS_PER_PROMPT;
 
 /**
  * Virtual votes added (split evenly) so the first few players aren't scored
@@ -53,11 +57,12 @@ export const GRADE_EMOJI: Record<Grade, string> = {
 export type Title = { name: string; emoji: string; min: number };
 
 /** Daily titles, highest first. Used for summary + user flair. */
+/** Thresholds are fractions of the daily max so they survive rule changes. */
 export const TITLES: Title[] = [
-  { name: 'Mind Reader', emoji: '🔮', min: 450 },
-  { name: 'Room Reader', emoji: '🧠', min: 380 },
-  { name: 'Vibe Checker', emoji: '📡', min: 300 },
-  { name: 'Hot Take Haver', emoji: '🌶️', min: 200 },
+  { name: 'Mind Reader', emoji: '🔮', min: Math.round(MAX_POINTS_PER_DAY * 0.9) },
+  { name: 'Room Reader', emoji: '🧠', min: Math.round(MAX_POINTS_PER_DAY * 0.76) },
+  { name: 'Vibe Checker', emoji: '📡', min: Math.round(MAX_POINTS_PER_DAY * 0.6) },
+  { name: 'Hot Take Haver', emoji: '🌶️', min: Math.round(MAX_POINTS_PER_DAY * 0.4) },
   { name: 'Certified Contrarian', emoji: '🙃', min: 0 },
 ];
 
@@ -76,9 +81,19 @@ export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
+/** Points for a debate at a given position (applies the Final Boss multiplier). */
+export function weightedPoints(index: number, guessPctA: number, actualPctA: number): number {
+  return pointsFor(guessPctA, actualPctA) * multiplierFor(index);
+}
+
+/** Grade on the 0-100 accuracy scale regardless of multiplier. */
+export function gradeForIndex(index: number, points: number): Grade {
+  return gradeFor(points / multiplierFor(index));
+}
+
 /** Re-scores a set of guesses against final splits. Returns per-prompt points + total. */
 export function rescore(guesses: number[], finalPctA: number[]): { points: number[]; total: number } {
-  const points = guesses.map((g, i) => pointsFor(g, finalPctA[i] ?? 50));
+  const points = guesses.map((g, i) => weightedPoints(i, g, finalPctA[i] ?? 50));
   return { points, total: points.reduce((s, p) => s + p, 0) };
 }
 
