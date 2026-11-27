@@ -11,6 +11,8 @@ For each one you:
 
 Finish all 5 to get your daily score out of 600, a title, and an emoji grid you can share.
 
+**▶️ [Watch the 60-second trailer](https://youtu.be/syx2BF0tT8U)** · **🎮 [Play in r/readtheroom_daily_dev](https://www.reddit.com/r/readtheroom_daily_dev)** · **📦 [App listing](https://developers.reddit.com/apps/readtheroom-daily)**
+
 <p align="center">
   <img src="assets/screenshots/1-intro.png" width="200" alt="Intro screen" />
   <img src="assets/screenshots/3-predict.png" width="200" alt="Predict the split" />

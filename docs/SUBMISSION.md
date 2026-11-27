@@ -4,10 +4,10 @@ Copy each section into the matching Devpost field. Replace every `<...>` before 
 
 ## Links
 - **App listing:** https://developers.reddit.com/apps/readtheroom-daily
-- **Test subreddit:** `<https://www.reddit.com/r/YOUR_SUB>` (public, under 200 members)
+- **Test subreddit:** https://www.reddit.com/r/readtheroom_daily_dev (must be public, under 200 members)
 - **Demo post:** `<link to a live round post>`
 - **Repo:** https://github.com/MdIbuA/reddithackathon
-- **Video:** `<YouTube link, under 60s, public or unlisted>`
+- **Video:** https://youtu.be/syx2BF0tT8U
 
 ## Tagline (one line)
 Don't guess what's right. Guess what your subreddit thinks.
