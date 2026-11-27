@@ -1,12 +1,15 @@
 import { redis } from '@devvit/web/server';
-import type { LeaderboardEntry, Pick, Prompt, Reveal, Suggestion, Summary, UserStats } from '../shared/api';
+import type { LeaderboardEntry, Pick, Prompt, Reveal, Suggestion, Summary, UserStats, Verdict, YesterdayInfo } from '../shared/api';
 import {
   GRADE_EMOJI,
   PROMPTS_PER_DAY,
   displayPctA,
+  divisiveIndex,
   gradeFor,
+  lopsidedIndex,
   nextStreak,
   pointsFor,
+  rescore,
   scoringPctA,
   titleFor,
 } from '../shared/scoring';
@@ -19,6 +22,9 @@ const K = {
   currentDay: 'rtr:currentDay',
   round: (day: number) => `rtr:round:${day}`,
   postDay: (postId: string) => `rtr:post:${postId}`,
+  dayPost: (day: number) => `rtr:daypost:${day}`,
+  verdict: (day: number) => `rtr:verdict:${day}`,
+  closed: 'rtr:closed', // hash day -> timestamp
   tally: (day: number, i: number) => `rtr:tally:${day}:${i}`,
   answers: (day: number, userId: string) => `rtr:ans:${day}:${userId}`,
   summary: (day: number, userId: string) => `rtr:sum:${day}:${userId}`,
@@ -106,6 +112,7 @@ export async function buildNextRound(day: number): Promise<Round> {
 export async function saveRound(round: Round, postId: string): Promise<void> {
   await redis.set(K.round(round.day), JSON.stringify(round));
   await redis.set(K.postDay(postId), String(round.day));
+  await redis.set(K.dayPost(round.day), postId);
   await redis.set(K.currentDay, String(round.day));
 }
 
@@ -215,6 +222,8 @@ export async function finalizeRound(
     rank: 0,
     players: 0,
     contrarianCount,
+    final: false,
+    provisionalScore: score,
   };
   await redis.set(K.summary(day, userId), JSON.stringify(summary));
   return withRank(day, userId, summary);
@@ -222,7 +231,10 @@ export async function finalizeRound(
 
 export async function getSummary(day: number, userId: string): Promise<Summary | null> {
   const raw = await redis.get(K.summary(day, userId));
-  return raw ? withRank(day, userId, JSON.parse(raw) as Summary) : null;
+  if (!raw) return null;
+  const s = JSON.parse(raw) as Summary;
+  // Older records predate final scoring.
+  return withRank(day, userId, { ...s, final: s.final ?? false, provisionalScore: s.provisionalScore ?? s.score });
 }
 
 async function withRank(day: number, userId: string, s: Summary): Promise<Summary> {
@@ -326,4 +338,98 @@ export async function clearSuggestions(): Promise<number> {
   const n = await redis.zCard(K.suggPending);
   await redis.del(K.suggPending);
   return n;
+}
+
+// ---------------------------------------------------------------------------
+// Closing a room: final scoring + verdict
+// ---------------------------------------------------------------------------
+export async function getDayPost(day: number): Promise<string | null> {
+  return (await redis.get(K.dayPost(day))) ?? null;
+}
+
+export async function getVerdict(day: number): Promise<Verdict | null> {
+  const raw = await redis.get(K.verdict(day));
+  return raw ? (JSON.parse(raw) as Verdict) : null;
+}
+
+/**
+ * Closes a room: re-scores every player against the FINAL split (so early
+ * players aren't punished for a tiny sample), adjusts all-time totals by the
+ * difference, and stores a public verdict. Idempotent per day.
+ */
+export async function closeDay(day: number): Promise<Verdict | null> {
+  const round = await getRound(day);
+  if (!round) return null;
+  if (!(await redis.hSetNX(K.closed, String(day), String(Date.now())))) return getVerdict(day);
+
+  const tallies = await Promise.all(round.prompts.map((_, i) => redis.hGetAll(K.tally(day, i))));
+  const counts = tallies.map((t) => ({ a: Number(t.a ?? 0), b: Number(t.b ?? 0) }));
+  const finalScoring = counts.map(scoringPctA);
+  const finalDisplay = counts.map(displayPctA);
+
+  const players = await redis.zRange(K.dayBoard(day), 0, -1, { by: 'rank' });
+  const BATCH = 25;
+  for (let i = 0; i < players.length; i += BATCH) {
+    await Promise.all(
+      players.slice(i, i + BATCH).map(async ({ member: userId, score: provisional }) => {
+        const answers = (await getAnswers(day, userId)).filter((a): a is Reveal => a !== null);
+        if (answers.length !== round.prompts.length) return;
+        const { points, total } = rescore(answers.map((a) => a.guess), finalScoring);
+        const delta = total - provisional;
+        await redis.zAdd(K.dayBoard(day), { member: userId, score: total });
+        if (delta !== 0) {
+          await redis.zIncrBy(K.allTimeBoard, userId, delta);
+          await redis.hIncrBy(K.user(userId), 'totalScore', delta);
+        }
+        const raw = await redis.get(K.summary(day, userId));
+        if (raw) {
+          const prev = JSON.parse(raw) as Summary;
+          const title = titleFor(total);
+          const updated: Summary = {
+            ...prev,
+            score: total,
+            title: title.name,
+            titleEmoji: title.emoji,
+            grid: points.map((p) => GRADE_EMOJI[gradeFor(p)]).join(''),
+            final: true,
+            provisionalScore: prev.provisionalScore ?? provisional,
+            finalPoints: points,
+          };
+          await redis.set(K.summary(day, userId), JSON.stringify(updated));
+        }
+      }),
+    );
+  }
+
+  const top = await getLeaderboards(day, undefined);
+  const verdict: Verdict = {
+    day,
+    players: players.length,
+    prompts: round.prompts.map((p, i) => ({
+      q: p.q,
+      a: p.a,
+      b: p.b,
+      ...(p.author ? { author: p.author } : {}),
+      pctA: finalDisplay[i]!,
+      total: counts[i]!.a + counts[i]!.b,
+    })),
+    divisive: divisiveIndex(finalDisplay),
+    lopsided: lopsidedIndex(finalDisplay),
+    top: top.day.slice(0, 3).map((r) => ({ username: r.username, score: r.score })),
+  };
+  await redis.set(K.verdict(day), JSON.stringify(verdict));
+  return verdict;
+}
+
+export async function getYesterday(day: number, userId: string | undefined): Promise<YesterdayInfo | null> {
+  if (day <= 1) return null;
+  const verdict = await getVerdict(day - 1);
+  if (!verdict) return null;
+  const s = userId ? await getSummary(day - 1, userId) : null;
+  return {
+    verdict,
+    me: s
+      ? { score: s.score, rank: s.rank, title: s.title, titleEmoji: s.titleEmoji, delta: s.score - s.provisionalScore }
+      : null,
+  };
 }

@@ -9,6 +9,8 @@ import type {
   Reveal,
   StateResponse,
   SuggestionsResponse,
+  Verdict,
+  YesterdayInfo,
 } from '../shared/api';
 import { MAX_POINTS_PER_DAY, PROMPTS_PER_DAY, gradeFor, type Grade } from '../shared/scoring';
 import { ApiError, api } from './api';
@@ -21,7 +23,7 @@ type View =
   | { kind: 'reveal'; index: number; reveal: Reveal; completed: boolean }
   | { kind: 'summary' };
 
-type Sheet = null | 'leaderboard' | 'suggest' | 'howto';
+type Sheet = null | 'leaderboard' | 'suggest' | 'howto' | 'verdict';
 
 const GRADE_LABEL: Record<Grade, string> = {
   bullseye: 'Bullseye',
@@ -107,7 +109,12 @@ export function App() {
 
       <main className="main" key={`${view.kind}-${currentIndex}`}>
         {view.kind === 'intro' && (
-          <Intro state={state} onStart={() => setView({ kind: 'pick', index: 0 })} onHowTo={() => setSheet('howto')} />
+          <Intro
+            state={state}
+            onStart={() => setView({ kind: 'pick', index: 0 })}
+            onHowTo={() => setSheet('howto')}
+            onVerdict={() => setSheet('verdict')}
+          />
         )}
         {view.kind === 'pick' && (
           <PickStep
@@ -135,13 +142,21 @@ export function App() {
           />
         )}
         {view.kind === 'summary' && state.summary && (
-          <SummaryView state={state} onLeaderboard={() => setSheet('leaderboard')} onSuggest={() => setSheet('suggest')} />
+          <SummaryView
+            state={state}
+            onLeaderboard={() => setSheet('leaderboard')}
+            onSuggest={() => setSheet('suggest')}
+            onVerdict={() => setSheet('verdict')}
+          />
         )}
       </main>
 
       {sheet === 'leaderboard' && <LeaderboardSheet me={state.username} onClose={() => setSheet(null)} />}
       {sheet === 'suggest' && <SuggestSheet onClose={() => setSheet(null)} />}
       {sheet === 'howto' && <HowToSheet onClose={() => setSheet(null)} />}
+      {sheet === 'verdict' && (state.closed ?? state.yesterday?.verdict) && (
+        <VerdictSheet verdict={(state.closed ?? state.yesterday?.verdict)!} onClose={() => setSheet(null)} />
+      )}
     </div>
   );
 }
@@ -223,7 +238,7 @@ function PromptCard({ prompt, index, compact }: { prompt: Prompt; index: number;
 // ---------------------------------------------------------------------------
 // Screens
 // ---------------------------------------------------------------------------
-function Intro({ state, onStart, onHowTo }: { state: StateResponse; onStart: () => void; onHowTo: () => void }) {
+function Intro({ state, onStart, onHowTo, onVerdict }: { state: StateResponse; onStart: () => void; onHowTo: () => void; onVerdict: () => void }) {
   const [demo, setDemo] = useState(50);
   useEffect(() => {
     const seq = [64, 38, 71, 55, 47, 62];
@@ -252,6 +267,8 @@ function Intro({ state, onStart, onHowTo }: { state: StateResponse; onStart: () 
           <span>Team B</span>
         </div>
       </div>
+
+      {state.yesterday && <YesterdayCard info={state.yesterday} onOpen={onVerdict} />}
 
       <div className="intro-meta">
         <span className="live"><i className="pulse" />{state.playersToday.toLocaleString()} in the room</span>
@@ -399,7 +416,7 @@ function RevealStep({ prompt, index, reveal, onNext }: { prompt: Prompt; index: 
   );
 }
 
-function SummaryView({ state, onLeaderboard, onSuggest }: { state: StateResponse; onLeaderboard: () => void; onSuggest: () => void }) {
+function SummaryView({ state, onLeaderboard, onSuggest, onVerdict }: { state: StateResponse; onLeaderboard: () => void; onSuggest: () => void; onVerdict: () => void }) {
   const s = state.summary!;
   const score = useCountUp(s.score, 1100, 0, 150);
   const [busy, setBusy] = useState<string | null>(null);
@@ -428,8 +445,8 @@ function SummaryView({ state, onLeaderboard, onSuggest }: { state: StateResponse
       <Confetti fire={celebrate} pieces={160} />
       <section className="ticket">
         <div className="ticket-head">
-          <span>Room #{state.day} · results</span>
-          <span>r/{state.subreddit}</span>
+          <span>Room #{state.day} · r/{state.subreddit}</span>
+          <span className={`lock ${s.final ? 'is-final' : ''}`}>{s.final ? '🔒 Final' : '⏳ Provisional'}</span>
         </div>
         <div className="ticket-score">
           <span className="ticket-emoji">{s.titleEmoji}</span>
@@ -446,15 +463,16 @@ function SummaryView({ state, onLeaderboard, onSuggest }: { state: StateResponse
           {state.prompts.map((p, i) => {
             const a = state.answers[i];
             if (!a) return null;
-            const g = gradeFor(a.points);
+            const pts = s.final && s.finalPoints ? (s.finalPoints[i] ?? a.points) : a.points;
+            const g = gradeFor(pts);
             return (
               <li key={p.id}>
                 <span className="bd-q">{p.q}</span>
                 <span className="bd-bar">
-                  <i className="bd-fill" style={{ width: `${a.actualPctA}%` }} />
+                  <i className="bd-fill" style={{ width: `${state.closed?.prompts[i]?.pctA ?? a.actualPctA}%` }} />
                   <i className="bd-you" style={{ left: `${a.guess}%` }} />
                 </span>
-                <span className={`bd-pts g-${g}`}>{a.points}</span>
+                <span className={`bd-pts g-${g}`}>{pts}</span>
               </li>
             );
           })}
@@ -478,8 +496,49 @@ function SummaryView({ state, onLeaderboard, onSuggest }: { state: StateResponse
           <span aria-hidden>›</span>
         </button>
       </div>
-      <Countdown />
+      {!s.final && (
+        <p className="lock-note">
+          ⏳ Scores lock when the next room opens. Early reads get re-scored against the final split, so come back tomorrow to see yours.
+        </p>
+      )}
+      {(state.closed || state.yesterday) && (
+        <button className="btn-link" onClick={onVerdict}>
+          📊 {state.closed ? `See Room #${state.day}’s final verdict` : `See Room #${state.yesterday!.verdict.day}’s verdict`}
+        </button>
+      )}
+      {state.isToday && <Countdown />}
     </div>
+  );
+}
+
+function YesterdayCard({ info, onOpen }: { info: YesterdayInfo; onOpen: () => void }) {
+  const v = info.verdict;
+  const hot = v.prompts[v.divisive];
+  return (
+    <button className="verdict-card" onClick={onOpen}>
+      <span className="vc-head">
+        <span className="vc-kicker">🔒 Room #{v.day} verdict</span>
+        <span className="vc-open">See all ›</span>
+      </span>
+      {info.me ? (
+        <span className="vc-me">
+          <b>{info.me.titleEmoji} {info.me.score}</b>
+          <span>final · #{info.me.rank} of {v.players}</span>
+          {info.me.delta !== 0 && (
+            <span className={`vc-delta ${info.me.delta > 0 ? 'up' : 'down'}`}>
+              {info.me.delta > 0 ? '▲' : '▼'} {Math.abs(info.me.delta)}
+            </span>
+          )}
+        </span>
+      ) : (
+        <span className="vc-me"><span>You missed it. {v.players} players read the room.</span></span>
+      )}
+      {hot && (
+        <span className="vc-hot">
+          🔥 Most divisive: <b>{hot.q}</b> {hot.pctA}–{100 - hot.pctA}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -690,6 +749,45 @@ function HowToSheet({ onClose }: { onClose: () => void }) {
       <p className="small muted">
         Score 450+/500 to earn <b>🔮 Mind Reader</b>. A new room opens every day at 12:00 UTC. Play daily to keep your 🔥 streak.
       </p>
+    </SheetFrame>
+  );
+}
+
+function VerdictSheet({ verdict, onClose }: { verdict: Verdict; onClose: () => void }) {
+  return (
+    <SheetFrame title={`Room #${verdict.day}: the verdict`} onClose={onClose}>
+      <p className="muted small">{verdict.players.toLocaleString()} players · final splits</p>
+      <ol className="verdict-list">
+        {verdict.prompts.map((p, i) => {
+          const la = splitLabel(p.a);
+          const lb = splitLabel(p.b);
+          return (
+            <li key={i}>
+              <div className="vl-top">
+                <span className="vl-q">{p.q}</span>
+                {i === verdict.divisive && <span className="tag hot">🔥 Divisive</span>}
+                {i === verdict.lopsided && i !== verdict.divisive && <span className="tag cold">🧊 One-sided</span>}
+              </div>
+              <div className="vl-bar">
+                <i style={{ width: `${p.pctA}%` }} />
+              </div>
+              <div className="vl-labels">
+                <span className="ta">{la.emoji} {la.text} <b>{p.pctA}%</b></span>
+                <span className="tb"><b>{100 - p.pctA}%</b> {lb.emoji} {lb.text}</span>
+              </div>
+              {p.author && <div className="tiny muted">✨ by u/{p.author} · {p.total} votes</div>}
+            </li>
+          );
+        })}
+      </ol>
+      {verdict.top.length > 0 && (
+        <div className="vl-top3">
+          <b>Best readers</b>
+          {verdict.top.map((t, i) => (
+            <span key={t.username}>{['🥇', '🥈', '🥉'][i]} u/{t.username} <b>{t.score}</b></span>
+          ))}
+        </div>
+      )}
     </SheetFrame>
   );
 }

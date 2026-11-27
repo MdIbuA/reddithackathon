@@ -75,3 +75,27 @@ export function nextStreak(prevStreak: number, lastDay: number | undefined, day:
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
+
+/** Re-scores a set of guesses against final splits. Returns per-prompt points + total. */
+export function rescore(guesses: number[], finalPctA: number[]): { points: number[]; total: number } {
+  const points = guesses.map((g, i) => pointsFor(g, finalPctA[i] ?? 50));
+  return { points, total: points.reduce((s, p) => s + p, 0) };
+}
+
+/** Index of the debate closest to a 50/50 split (ties -> earliest). */
+export function divisiveIndex(pctA: number[]): number {
+  let best = 0;
+  pctA.forEach((p, i) => {
+    if (Math.abs(p - 50) < Math.abs(pctA[best]! - 50)) best = i;
+  });
+  return best;
+}
+
+/** Index of the most one-sided debate (ties -> earliest). */
+export function lopsidedIndex(pctA: number[]): number {
+  let best = 0;
+  pctA.forEach((p, i) => {
+    if (Math.abs(p - 50) > Math.abs(pctA[best]! - 50)) best = i;
+  });
+  return best;
+}

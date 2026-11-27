@@ -27,6 +27,8 @@ Finish all 5 to get your daily score out of 500, a title, and an emoji grid you 
 | **Share to comments** | One tap posts your result to the round's comment thread, so each day's post fills with friendly debate. |
 | **Wear your title** | Set your subreddit user flair to your daily title + streak (e.g. `🔮 Mind Reader · 🔥7`). |
 | **Streaks & leaderboards** | Per-round and all-time boards, plus 🔥 daily streaks. |
+| **Yesterday's Verdict** | Each new room opens with the previous room's final splits, its most divisive and most one-sided debates, and the best readers. |
+| **Pinned results thread** | When a room closes, the app pins a "📊 The room has spoken" comment with every final split, turning each post into a discussion thread. |
 | **Fully automatic** | A scheduled job posts a new round every day at 12:00 UTC. |
 
 ## Scoring
@@ -39,6 +41,8 @@ Finish all 5 to get your daily score out of 500, a title, and an emoji grid you 
 | 🟥 Miss | 0–44 |
 
 **Daily titles:** 🔮 Mind Reader (450+) · 🧠 Room Reader (380+) · 📡 Vibe Checker (300+) · 🌶️ Hot Take Haver (200+) · 🙃 Certified Contrarian.
+
+**Final scoring:** your score is *provisional* while the room is open. When the next room opens, every player is re-scored against the room's **final** split, the leaderboards are updated, and the new post shows your locked score (with ▲/▼ versus provisional). Early players aren't punished for reading a small room, and everyone has a reason to come back.
 
 **Small rooms:** the first few players of a round would otherwise be scored against just 1–2 votes. To prevent that, the score adds 4 virtual votes split 50/50, and their effect fades as real votes arrive. Players always see the raw percentage.
 

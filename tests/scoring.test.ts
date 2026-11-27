@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayPctA, gradeFor, nextStreak, pointsFor, scoringPctA, titleFor } from '../src/shared/scoring';
+import { displayPctA, divisiveIndex, gradeFor, lopsidedIndex, nextStreak, pointsFor, rescore, scoringPctA, titleFor } from '../src/shared/scoring';
 import { validateSuggestion } from '../src/server/moderation';
 import { CURATED_PROMPTS } from '../src/server/prompts';
 
@@ -32,6 +32,23 @@ describe('scoring', () => {
     expect(nextStreak(3, 5, 5)).toBe(3);
     expect(nextStreak(3, 2, 5)).toBe(1);
     expect(nextStreak(0, undefined, 1)).toBe(1);
+  });
+});
+
+describe('final scoring', () => {
+  it('re-scores guesses against the final split', () => {
+    // Early player guessed 70 when the room was tiny; room finished at 70 -> perfect.
+    const r = rescore([70, 30, 50, 90, 10], [70, 30, 60, 80, 10]);
+    expect(r.points).toEqual([100, 100, 80, 80, 100]);
+    expect(r.total).toBe(460);
+  });
+  it('treats missing final splits as 50/50', () => {
+    expect(rescore([50], []).total).toBe(100);
+  });
+  it('finds the most divisive and most one-sided debates', () => {
+    const pcts = [71, 52, 88, 34, 49];
+    expect(divisiveIndex(pcts)).toBe(4); // 49 is 1 from 50 (52 is 2)
+    expect(lopsidedIndex(pcts)).toBe(2); // 88
   });
 });
 

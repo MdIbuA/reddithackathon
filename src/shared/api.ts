@@ -28,6 +28,30 @@ export type Summary = {
   rank: number; // 1-based rank on today's board
   players: number;
   contrarianCount: number; // prompts where you were in the minority
+  /** True once the room has closed and the score was re-scored against the final split. */
+  final: boolean;
+  /** Score shown at play time, before the room closed. */
+  provisionalScore: number;
+  /** Per-debate points after re-scoring (present once final). */
+  finalPoints?: number[];
+};
+
+export type VerdictPrompt = { q: string; a: string; b: string; author?: string; pctA: number; total: number };
+
+/** Snapshot of a closed room, shown at the top of the next day's post. */
+export type Verdict = {
+  day: number;
+  players: number;
+  prompts: VerdictPrompt[];
+  divisive: number; // index of the closest-to-50/50 debate
+  lopsided: number; // index of the most one-sided debate
+  top: { username: string; score: number }[];
+};
+
+export type YesterdayInfo = {
+  verdict: Verdict;
+  /** The player's locked result for that room, if they played. */
+  me: { score: number; rank: number; title: string; titleEmoji: string; delta: number } | null;
 };
 
 export type UserStats = {
@@ -48,6 +72,9 @@ export type StateResponse = {
   summary: Summary | null;
   stats: UserStats;
   playersToday: number;
+  /** Final split per debate once this room has closed (null while live). */
+  closed: Verdict | null;
+  yesterday: YesterdayInfo | null;
 };
 
 export type AnswerRequest = { index: number; pick: Pick; guess: number };

@@ -16,10 +16,14 @@ import {
   addSuggestion,
   buildNextRound,
   clearSuggestions,
+  closeDay,
   finalizeRound,
   getAnswers,
   getCurrentDay,
   getDayForPost,
+  getDayPost,
+  getVerdict,
+  getYesterday,
   getLeaderboards,
   getRound,
   getSuggestionsFor,
@@ -119,6 +123,9 @@ async function createRound(reason: 'cron' | 'menu' | 'install'): Promise<{ day: 
       const last = await getRound(current);
       if (last && Date.now() - last.createdAt < 6 * 60 * 60 * 1000) return null;
     }
+    // Close the previous room first: final scores + verdict + pinned results comment.
+    if (current > 0) await closeRoom(current);
+
     const day = current + 1;
     const round = await buildNextRound(day);
     const sub = context.subredditName;
@@ -139,6 +146,35 @@ async function createRound(reason: 'cron' | 'menu' | 'install'): Promise<{ day: 
   });
 }
 
+const bar = (pct: number) => {
+  const filled = Math.round(pct / 10);
+  return '🟧'.repeat(filled) + '🟦'.repeat(10 - filled);
+};
+
+/** Locks final scores for a room and pins a results comment on its post. Never throws. */
+async function closeRoom(day: number): Promise<void> {
+  try {
+    const verdict = await closeDay(day);
+    const postId = await getDayPost(day);
+    if (!verdict || !postId || verdict.players === 0) return;
+    const lines = verdict.prompts.map((p, i) => {
+      const tag = i === verdict.divisive ? ' 🔥 *most divisive*' : i === verdict.lopsided ? ' 🧊 *most one-sided*' : '';
+      return `**${p.q}**${tag}  \n${bar(p.pctA)} ${p.a} **${p.pctA}%** · ${p.b} **${100 - p.pctA}%** (${p.total} votes)`;
+    });
+    const podium = verdict.top.map((t, i) => `${['🥇', '🥈', '🥉'][i]} u/${t.username}: ${t.score}`).join('  \n');
+    const text =
+      `## 📊 The room has spoken: Room #${day} is closed\n\n` +
+      `${verdict.players} players read the room. Final scores are locked.\n\n` +
+      lines.join('\n\n') +
+      (podium ? `\n\n**Best readers**  \n${podium}` : '') +
+      `\n\n*A new room is open now. Can you read it?*`;
+    const comment = await reddit.submitComment({ id: postId as `t3_${string}`, text, runAs: 'APP' });
+    await comment.distinguish(true);
+  } catch (err) {
+    console.error(`[closeRoom] day ${day}`, err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Game API (called by the web view)
 // ---------------------------------------------------------------------------
@@ -147,12 +183,14 @@ route('GET', '/api/state', async (): Promise<StateResponse> => {
   const round = await getRound(day);
   if (!round) throw new HttpError(404, 'Round not found', 'NOT_FOUND');
   const { userId, username, snoovatar } = context;
-  const [answers, summary, stats, playersToday, currentDay] = await Promise.all([
+  const [answers, summary, stats, playersToday, currentDay, closed, yesterday] = await Promise.all([
     userId ? getAnswers(day, userId) : Promise.resolve(Array(PROMPTS_PER_DAY).fill(null)),
     userId ? getSummary(day, userId) : Promise.resolve(null),
     getUserStats(userId),
     getTodayPlayers(day),
     getCurrentDay(),
+    getVerdict(day),
+    getYesterday(day, userId),
   ]);
   return {
     day,
@@ -165,6 +203,8 @@ route('GET', '/api/state', async (): Promise<StateResponse> => {
     summary,
     stats,
     playersToday,
+    closed,
+    yesterday,
   };
 });
 
